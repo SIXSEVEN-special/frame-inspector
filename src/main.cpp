@@ -41,8 +41,10 @@ static Macro M;
 static bool hasMacro = false;
 static size_t idx = 0;
 static bool injecting = false;
+static int injFrame = 0;
 
 static bool playbackOn() { return hasMacro && Mod::get()->getSettingValue<bool>("playback"); }
+static int fps() { return (hasMacro && M.framerate > 0) ? (int)M.framerate : 240; }
 
 static void loadMacro() {
     hasMacro = false;
@@ -60,6 +62,11 @@ static void loadMacro() {
     hasMacro = true;
 }
 
+static void seekMacro(uint64_t frame) {
+    idx = std::lower_bound(M.inputs.begin(), M.inputs.end(), frame,
+        [](auto const& in, uint64_t f) { return in.frame < f; }) - M.inputs.begin();
+}
+
 // ---------- stats ----------
 struct Click { int down; int up; };
 
@@ -71,12 +78,63 @@ struct State {
     std::vector<Click> log;
     void reset() { *this = State(); }
     int curCps() const {
-        int n = 0;
-        for (int i = (int)log.size() - 1; i >= 0 && log[i].down > frame - 240; i--) n++;
+        int n = 0, w = fps();
+        for (int i = (int)log.size() - 1; i >= 0 && log[i].down > frame - w; i--) n++;
         return n;
     }
 };
 static State S;
+
+// ---------- rings ----------
+struct Ring { CCDrawNode* node; CCLabelBMFont* label; int born; int row; };
+static std::vector<Ring> rings;
+
+static void spawnRing(GJBaseGameLayer* gl, int gap, int row) {
+    if (!Mod::get()->getSettingValue<bool>("show-circles")) return;
+    if (!gl->m_player1 || !gl->m_objectLayer) return;
+    auto node = CCDrawNode::create();
+    node->setPosition(gl->m_player1->getPosition());
+    auto lbl = CCLabelBMFont::create(gap >= 0 ? std::to_string(gap).c_str() : "", "bigFont.fnt");
+    lbl->setScale(0.5f);
+    lbl->setColor(COLS[row]);
+    lbl->setAnchorPoint({1.f, 0.5f});
+    lbl->setPosition({-26.f, 0.f});
+    node->addChild(lbl);
+    gl->m_objectLayer->addChild(node, 1000);
+    rings.push_back({node, lbl, S.frame, row});
+}
+
+static void clearRings(bool removeNodes) {
+    if (removeNodes) for (auto& r : rings) r.node->removeFromParent();
+    rings.clear();
+}
+
+static void registerDown(int frame, GJBaseGameLayer* gl) {
+    int gap = S.lastDown >= 0 ? frame - S.lastDown : -1;
+    int row = gap >= 0 ? bucketRow(gap) : 0;
+    if (gap >= 0) {
+        S.lastGap = gap;
+        if (S.minGap < 0 || gap < S.minGap) S.minGap = gap;
+        S.rows[row]++;
+        if (Mod::get()->getSettingValue<bool>("click-sound") &&
+            gap <= Mod::get()->getSettingValue<int64_t>("sound-max-gap")) {
+            FMODAudioEngine::sharedEngine()->playEffect("counter003.ogg", 1.f, 0.f, 1.f);
+        }
+    }
+    S.lastDown = S.downFrame = frame;
+    S.clicks++;
+    S.log.push_back({frame, -1});
+    S.maxCps = std::max(S.maxCps, S.curCps());
+    spawnRing(gl, gap, row);
+}
+
+static void registerUp(int frame) {
+    if (S.downFrame < 0 || S.log.empty()) return;
+    S.log.back().up = frame;
+    S.lastHold = frame - S.downFrame;
+    if (S.minHold < 0 || S.lastHold < S.minHold) S.minHold = S.lastHold;
+    S.downFrame = -1;
+}
 
 static std::string buildOverview() {
     std::string head = hasMacro
@@ -97,7 +155,7 @@ static std::string buildOverview() {
     std::string out = head + fmt::format(
         "Frames: {} (~{:.2f}s)\nClicks: {}   Max CPS: {}\n\n"
         "Gap  min {} / avg {:.1f} / max {}\nHold min {} / avg {:.1f} / max {}\n\nWindows:\n",
-        S.frame, S.frame / 240.0, S.clicks, S.maxCps,
+        S.frame, S.frame / (double)fps(), S.clicks, S.maxCps,
         mn(gaps), avg(gaps), mx(gaps), mn(holds), avg(holds), mx(holds));
     for (int i = 0; i < 10; i++) out += fmt::format("{}: {}\n", NAMES[i], S.rows[i]);
     return out;
@@ -112,6 +170,7 @@ class $modify(InspectGJBGL, GJBaseGameLayer) {
                 while (idx < M.inputs.size() && M.inputs[idx].frame <= (uint64_t)S.frame) {
                     auto& in = M.inputs[idx++];
                     injecting = true;
+                    injFrame = (int)in.frame;
                     this->handleButton(in.down, in.button, !in.player2);
                     injecting = false;
                 }
@@ -127,51 +186,47 @@ class $modify(InspectGJBGL, GJBaseGameLayer) {
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
         if (!PlayLayer::get() || button != 1 || !isPlayer1) return;
 
-        if (down) {
-            if (S.lastDown >= 0) {
-                S.lastGap = S.frame - S.lastDown;
-                if (S.minGap < 0 || S.lastGap < S.minGap) S.minGap = S.lastGap;
-                S.rows[bucketRow(S.lastGap)]++;
-                if (Mod::get()->getSettingValue<bool>("click-sound") &&
-                    S.lastGap <= Mod::get()->getSettingValue<int64_t>("sound-max-gap")) {
-                    FMODAudioEngine::sharedEngine()->playEffect("counter003.ogg", 1.f, 0.f, 1.f);
-                }
-            }
-            S.lastDown = S.downFrame = S.frame;
-            S.clicks++;
-            S.log.push_back({S.frame, -1});
-            S.maxCps = std::max(S.maxCps, S.curCps());
-        } else if (S.downFrame >= 0 && !S.log.empty()) {
-            S.log.back().up = S.frame;
-            S.lastHold = S.frame - S.downFrame;
-            if (S.minHold < 0 || S.lastHold < S.minHold) S.minHold = S.lastHold;
-            S.downFrame = -1;
-        }
+        // with a macro, stats use the macro's own frame numbers
+        int f = injecting ? injFrame : S.frame;
+        if (down) registerDown(f, this);
+        else registerUp(f);
     }
 };
 
 class $modify(InspectPL, PlayLayer) {
     struct Fields {
-        std::array<CCLabelBMFont*, 10> rows{};
+        std::array<CCLabelBMFont*, 10> names{};
+        std::array<CCLabelBMFont*, 10> nums{};
         CCLabelBMFont* cps = nullptr;
-        CCDrawNode* tl = nullptr;
     };
 
     void setupHasCompleted() {
         PlayLayer::setupHasCompleted();
         loadMacro();
+        clearRings(false);
         idx = 0;
         S.reset();
 
         auto win = CCDirector::get()->getWinSize();
+        float top = win.height - (float)Mod::get()->getSettingValue<int64_t>("counter-y");
         for (int i = 0; i < 10; i++) {
-            auto l = CCLabelBMFont::create("", "bigFont.fnt");
-            l->setAnchorPoint({0.f, 1.f});
-            l->setScale(0.42f);
-            l->setColor(COLS[i]);
-            l->setPosition({8.f, win.height - 8.f - i * 17.f});
-            m_uiLayer->addChild(l, 100);
-            m_fields->rows[i] = l;
+            float y = top - i * 17.f;
+            auto n = CCLabelBMFont::create("", "bigFont.fnt");
+            n->setAnchorPoint({0.f, 1.f});
+            n->setScale(0.45f);
+            n->setColor(COLS[i]);
+            n->setPosition({8.f, y});
+            n->setString(fmt::format("{}:", NAMES[i]).c_str());
+            m_uiLayer->addChild(n, 100);
+            m_fields->names[i] = n;
+
+            auto v = CCLabelBMFont::create("0", "bigFont.fnt");
+            v->setAnchorPoint({0.f, 1.f});
+            v->setScale(0.45f);
+            v->setColor(COLS[i]);
+            v->setPosition({70.f, y});
+            m_uiLayer->addChild(v, 100);
+            m_fields->nums[i] = v;
         }
         auto c = CCLabelBMFont::create("", "bigFont.fnt");
         c->setAnchorPoint({1.f, 1.f});
@@ -180,55 +235,53 @@ class $modify(InspectPL, PlayLayer) {
         c->setPosition({win.width - 8.f, win.height - 8.f});
         m_uiLayer->addChild(c, 100);
         m_fields->cps = c;
-
-        auto d = CCDrawNode::create();
-        m_uiLayer->addChild(d, 99);
-        m_fields->tl = d;
     }
 
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
+
         bool show = Mod::get()->getSettingValue<bool>("show-overlay");
         for (int i = 0; i < 10; i++) {
-            auto l = m_fields->rows[i];
-            if (!l) continue;
-            l->setVisible(show);
-            if (show) l->setString(fmt::format("{}: {}", NAMES[i], S.rows[i]).c_str());
+            auto n = m_fields->names[i];
+            auto v = m_fields->nums[i];
+            if (!n || !v) continue;
+            n->setVisible(show);
+            v->setVisible(show);
+            if (show) v->setString(std::to_string(S.rows[i]).c_str());
         }
         if (auto c = m_fields->cps) {
             c->setVisible(show);
             if (show) c->setString(fmt::format("{}/{}/{} CPS", S.curCps(), S.maxCps, S.clicks).c_str());
         }
 
-        // click circle timeline: last 120 frames, newest on the right
-        auto d = m_fields->tl;
-        if (!d) return;
-        d->clear();
-        if (!Mod::get()->getSettingValue<bool>("show-circles")) return;
-
-        auto win = CCDirector::get()->getWinSize();
-        const int WIN = 120;
-        const float w = 300.f, y = 16.f;
-        const float x0 = win.width / 2.f - w / 2.f;
-        auto xAt = [&](int age) { return x0 + w - std::min(age, WIN) * (w / WIN); };
-
-        d->drawSegment({x0, y}, {x0 + w, y}, 0.6f, {1.f, 1.f, 1.f, 0.25f});
-        for (size_t i = S.log.size(); i-- > 0;) {
-            auto& c = S.log[i];
-            int end = c.up >= 0 ? c.up : S.frame;
-            if (S.frame - end > WIN) break;
-            int gap = i > 0 ? c.down - S.log[i - 1].down : 99;
-            int row = bucketRow(gap);
-            d->drawSegment({xAt(S.frame - c.down), y}, {xAt(S.frame - end), y}, 2.f, col4(row, 0.55f));
-            if (S.frame - c.down <= WIN)
-                d->drawDot({xAt(S.frame - c.down), y}, 5.f, col4(row));
+        // click rings: fade out and expand a little
+        for (size_t i = 0; i < rings.size();) {
+            auto& r = rings[i];
+            float age = std::max(0, S.frame - r.born) / (float)fps();
+            float a = 1.f - age / 0.8f;
+            if (a <= 0.f) {
+                r.node->removeFromParent();
+                rings.erase(rings.begin() + i);
+                continue;
+            }
+            auto c = col4(r.row, a);
+            r.node->clear();
+            r.node->drawCircle({0.f, 0.f}, 18.f + age * 14.f, ccColor4F{c.r, c.g, c.b, 0.15f * a}, 2.5f, c, 36);
+            r.label->setOpacity((GLubyte)(a * 255.f));
+            i++;
         }
     }
 
     void resetLevel() {
         PlayLayer::resetLevel();
-        idx = 0;
+        clearRings(true);
         S.reset();
+        seekMacro((uint64_t)m_gameState.m_currentProgress);
+    }
+
+    void onQuit() {
+        clearRings(false);
+        PlayLayer::onQuit();
     }
 };
 

@@ -3,9 +3,9 @@
   "gd": { "win": "2.2081" },
   "id": "yourname.frameinspector",
   "name": "Frame Inspector",
-  "version": "v1.3.0",
+  "version": "v1.4.0",
   "developer": "yourname",
-  "description": "Loads a .gdr macro and plays it back with a frame window counter, CPS, click circle timeline and click sounds.",
+  "description": "Loads a .gdr macro and plays it back with a frame window counter, CPS, click rings and click sounds.",
   "settings": {
     "macro-file": {
       "type": "file",
@@ -16,7 +16,8 @@
     },
     "playback": { "type": "bool", "name": "Play Macro", "description": "Inject the macro inputs. Your own clicks are ignored while a macro is loaded.", "default": true },
     "show-overlay": { "type": "bool", "name": "Show Counter", "default": true },
-    "show-circles": { "type": "bool", "name": "Show Click Circles", "default": true },
+    "counter-y": { "type": "int", "name": "Counter Distance From Top", "default": 30, "min": 0, "max": 150 },
+    "show-circles": { "type": "bool", "name": "Show Click Rings", "default": true },
     "click-sound": { "type": "bool", "name": "Tight Click Sound", "default": true },
     "sound-max-gap": { "type": "int", "name": "Sound Max Gap (frames)", "default": 4, "min": 1, "max": 16 }
   }
