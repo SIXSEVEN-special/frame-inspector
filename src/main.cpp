@@ -1,9 +1,11 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/utils/file.hpp>
 #include <vector>
 #include <string>
+#include <algorithm>
 
 using namespace geode::prelude;
 
@@ -17,6 +19,54 @@ struct State {
     void reset() { *this = State(); }
 };
 static State S;
+
+static std::string bar(int n, int mx) {
+    int len = mx > 0 ? (n * 20) / mx : 0;
+    if (n > 0 && len == 0) len = 1;
+    return std::string(len, '#');
+}
+
+static std::string buildOverview() {
+    if (S.log.empty()) return "No clicks recorded this attempt yet.";
+
+    std::vector<int> gaps, holds;
+    for (size_t i = 0; i < S.log.size(); i++) {
+        if (i > 0) gaps.push_back(S.log[i].down - S.log[i - 1].down);
+        if (S.log[i].up >= 0) holds.push_back(S.log[i].up - S.log[i].down);
+    }
+
+    auto avg = [](const std::vector<int>& v) {
+        if (v.empty()) return 0.0;
+        double s = 0; for (int x : v) s += x; return s / v.size();
+    };
+    auto mn = [](const std::vector<int>& v) { return v.empty() ? -1 : *std::min_element(v.begin(), v.end()); };
+    auto mxv = [](const std::vector<int>& v) { return v.empty() ? -1 : *std::max_element(v.begin(), v.end()); };
+
+    double secs = S.frame / 240.0;
+    double cps = secs > 0 ? S.clicks / secs : 0;
+
+    const char* names[] = {"1f", "2f", "3-4f", "5-8f", "9-16f", "17+f"};
+    int b[6] = {0};
+    for (int g : gaps) {
+        int i = g <= 1 ? 0 : g == 2 ? 1 : g <= 4 ? 2 : g <= 8 ? 3 : g <= 16 ? 4 : 5;
+        b[i]++;
+    }
+    int mb = *std::max_element(b, b + 6);
+
+    std::string out = fmt::format(
+        "Frames: {} (~{:.2f}s @240)\nClicks: {}   CPS: {:.2f}\n\n"
+        "Gap  min {} / avg {:.1f} / max {}\n"
+        "Hold min {} / avg {:.1f} / max {}\n\n"
+        "Gap windows:\n",
+        S.frame, secs, S.clicks, cps,
+        mn(gaps), avg(gaps), mxv(gaps),
+        mn(holds), avg(holds), mxv(holds));
+
+    for (int i = 0; i < 6; i++)
+        out += fmt::format("{:>6} {:>4} {}\n", names[i], b[i], bar(b[i], mb));
+
+    return out;
+}
 
 class $modify(InspectGJBGL, GJBaseGameLayer) {
     void processCommands(float dt) {
@@ -88,5 +138,20 @@ class $modify(InspectPL, PlayLayer) {
         auto path = Mod::get()->getSaveDir() / "clicks.csv";
         auto _ = utils::file::writeString(path, out);
         PlayLayer::onQuit();
+    }
+};
+
+class $modify(InspectPause, PauseLayer) {
+    void customSetup() {
+        PauseLayer::customSetup();
+        auto menu = this->getChildByID("right-button-menu");
+        if (!menu) return;
+        auto spr = ButtonSprite::create("Macro");
+        spr->setScale(0.6f);
+        auto btn = CCMenuItemExt::createSpriteExtra(spr, [](CCObject*) {
+            FLAlertLayer::create(nullptr, "Macro Overview", buildOverview(), "OK", nullptr, 380.f)->show();
+        });
+        menu->addChild(btn);
+        menu->updateLayout();
     }
 };
