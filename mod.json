@@ -1,0 +1,12 @@
+{
+  "geode": "5.10.1",
+  "gd": { "win": "2.2074" },
+  "id": "yourname.frameinspector",
+  "name": "Frame Inspector",
+  "version": "v1.0.0",
+  "developer": "yourname",
+  "description": "Frame counter + click/macro inspector overlay. Logs click/release frames to a CSV.",
+  "settings": {
+    "show-overlay": { "type": "bool", "name": "Show Overlay", "default": true }
+  }
+}
