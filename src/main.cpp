@@ -5,73 +5,75 @@
 #include <Geode/utils/file.hpp>
 #include <vector>
 #include <string>
+#include <array>
 #include <algorithm>
 
 using namespace geode::prelude;
 
+// rows are displayed top to bottom: 17+, 13+, 11+, 9+, 7+, 5+, 4, 3, 2, 1
+static const char* NAMES[10]  = {"17+", "13+", "11+", "9+", "7+", "5+", "4", "3", "2", "1"};
+static const ccColor3B COLS[10] = {
+    {255,105,215}, {190,120,255}, {110,120,255}, {70,150,255}, {60,200,255},
+    {100,230,120}, {255,255,255}, {255,235,110}, {255,160,60}, {255,90,90}
+};
+
+static int bucketRow(int gap) {
+    if (gap <= 1) return 9;
+    if (gap == 2) return 8;
+    if (gap == 3) return 7;
+    if (gap == 4) return 6;
+    if (gap <= 6) return 5;
+    if (gap <= 8) return 4;
+    if (gap <= 10) return 3;
+    if (gap <= 12) return 2;
+    if (gap <= 16) return 1;
+    return 0;
+}
+
 struct Click { int down; int up; };
 
 struct State {
-    int frame = 0, clicks = 0;
+    int frame = 0, clicks = 0, maxCps = 0;
     int downFrame = -1, lastDown = -1;
     int lastGap = -1, minGap = -1, lastHold = -1, minHold = -1;
+    int rows[10] = {0};
     std::vector<Click> log;
     void reset() { *this = State(); }
+    int curCps() const {
+        int n = 0;
+        for (int i = (int)log.size() - 1; i >= 0 && log[i].down > frame - 240; i--) n++;
+        return n;
+    }
 };
 static State S;
 
-static std::string bar(int n, int mx) {
-    int len = mx > 0 ? (n * 20) / mx : 0;
-    if (n > 0 && len == 0) len = 1;
-    return std::string(len, '#');
-}
-
 static std::string buildOverview() {
     if (S.log.empty()) return "No clicks recorded this attempt yet.";
-
     std::vector<int> gaps, holds;
     for (size_t i = 0; i < S.log.size(); i++) {
         if (i > 0) gaps.push_back(S.log[i].down - S.log[i - 1].down);
         if (S.log[i].up >= 0) holds.push_back(S.log[i].up - S.log[i].down);
     }
-
     auto avg = [](const std::vector<int>& v) {
         if (v.empty()) return 0.0;
         double s = 0; for (int x : v) s += x; return s / v.size();
     };
     auto mn = [](const std::vector<int>& v) { return v.empty() ? -1 : *std::min_element(v.begin(), v.end()); };
-    auto mxv = [](const std::vector<int>& v) { return v.empty() ? -1 : *std::max_element(v.begin(), v.end()); };
-
+    auto mx = [](const std::vector<int>& v) { return v.empty() ? -1 : *std::max_element(v.begin(), v.end()); };
     double secs = S.frame / 240.0;
-    double cps = secs > 0 ? S.clicks / secs : 0;
-
-    const char* names[] = {"1f", "2f", "3-4f", "5-8f", "9-16f", "17+f"};
-    int b[6] = {0};
-    for (int g : gaps) {
-        int i = g <= 1 ? 0 : g == 2 ? 1 : g <= 4 ? 2 : g <= 8 ? 3 : g <= 16 ? 4 : 5;
-        b[i]++;
-    }
-    int mb = *std::max_element(b, b + 6);
-
     std::string out = fmt::format(
-        "Frames: {} (~{:.2f}s @240)\nClicks: {}   CPS: {:.2f}\n\n"
-        "Gap  min {} / avg {:.1f} / max {}\n"
-        "Hold min {} / avg {:.1f} / max {}\n\n"
-        "Gap windows:\n",
-        S.frame, secs, S.clicks, cps,
-        mn(gaps), avg(gaps), mxv(gaps),
-        mn(holds), avg(holds), mxv(holds));
-
-    for (int i = 0; i < 6; i++)
-        out += fmt::format("{:>6} {:>4} {}\n", names[i], b[i], bar(b[i], mb));
-
+        "Frames: {} (~{:.2f}s)\nClicks: {}   Max CPS: {}\n\n"
+        "Gap  min {} / avg {:.1f} / max {}\nHold min {} / avg {:.1f} / max {}\n\nWindows:\n",
+        S.frame, secs, S.clicks, S.maxCps,
+        mn(gaps), avg(gaps), mx(gaps), mn(holds), avg(holds), mx(holds));
+    for (int i = 0; i < 10; i++) out += fmt::format("{}: {}\n", NAMES[i], S.rows[i]);
     return out;
 }
 
 class $modify(InspectGJBGL, GJBaseGameLayer) {
-    void processCommands(float dt) {
-        GJBaseGameLayer::processCommands(dt);
-        if (PlayLayer::get()) S.frame++;
+    void processCommands(float dt, bool isHalfTick, bool isLastTick) {
+        GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
+        if (PlayLayer::get() && !isHalfTick) S.frame++;
     }
     void handleButton(bool down, int button, bool isPlayer1) {
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
@@ -80,10 +82,16 @@ class $modify(InspectGJBGL, GJBaseGameLayer) {
             if (S.lastDown >= 0) {
                 S.lastGap = S.frame - S.lastDown;
                 if (S.minGap < 0 || S.lastGap < S.minGap) S.minGap = S.lastGap;
+                S.rows[bucketRow(S.lastGap)]++;
+                if (Mod::get()->getSettingValue<bool>("click-sound") &&
+                    S.lastGap <= Mod::get()->getSettingValue<int64_t>("sound-max-gap")) {
+                    FMODAudioEngine::sharedEngine()->playEffect("counter003.ogg", 1.f, 0.f, 1.f);
+                }
             }
             S.lastDown = S.downFrame = S.frame;
             S.clicks++;
             S.log.push_back({S.frame, -1});
+            S.maxCps = std::max(S.maxCps, S.curCps());
         } else if (S.downFrame >= 0 && !S.log.empty()) {
             S.log.back().up = S.frame;
             S.lastHold = S.frame - S.downFrame;
@@ -94,32 +102,46 @@ class $modify(InspectGJBGL, GJBaseGameLayer) {
 };
 
 class $modify(InspectPL, PlayLayer) {
-    struct Fields { CCLabelBMFont* label = nullptr; };
+    struct Fields {
+        std::array<CCLabelBMFont*, 10> rows{};
+        CCLabelBMFont* cps = nullptr;
+    };
 
     void setupHasCompleted() {
         PlayLayer::setupHasCompleted();
         S.reset();
-        auto l = CCLabelBMFont::create("", "chatFont.fnt");
-        l->setAnchorPoint({0.f, 1.f});
-        l->setScale(0.5f);
-        l->setOpacity(190);
-        l->setAlignment(kCCTextAlignmentLeft);
         auto win = CCDirector::get()->getWinSize();
-        l->setPosition({6.f, win.height - 6.f});
-        m_uiLayer->addChild(l, 100);
-        m_fields->label = l;
+        for (int i = 0; i < 10; i++) {
+            auto l = CCLabelBMFont::create("", "bigFont.fnt");
+            l->setAnchorPoint({0.f, 1.f});
+            l->setScale(0.42f);
+            l->setColor(COLS[i]);
+            l->setPosition({8.f, win.height - 8.f - i * 17.f});
+            m_uiLayer->addChild(l, 100);
+            m_fields->rows[i] = l;
+        }
+        auto c = CCLabelBMFont::create("", "bigFont.fnt");
+        c->setAnchorPoint({1.f, 1.f});
+        c->setScale(0.4f);
+        c->setOpacity(170);
+        c->setPosition({win.width - 8.f, win.height - 8.f});
+        m_uiLayer->addChild(c, 100);
+        m_fields->cps = c;
     }
 
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
-        auto l = m_fields->label;
-        if (!l) return;
         bool show = Mod::get()->getSettingValue<bool>("show-overlay");
-        l->setVisible(show);
-        if (!show) return;
-        l->setString(fmt::format(
-            "Frame: {}\nClicks: {}\nLast gap: {}  Min gap: {}\nLast hold: {}  Min hold: {}",
-            S.frame, S.clicks, S.lastGap, S.minGap, S.lastHold, S.minHold).c_str());
+        for (int i = 0; i < 10; i++) {
+            auto l = m_fields->rows[i];
+            if (!l) continue;
+            l->setVisible(show);
+            if (show) l->setString(fmt::format("{}: {}", NAMES[i], S.rows[i]).c_str());
+        }
+        if (auto c = m_fields->cps) {
+            c->setVisible(show);
+            if (show) c->setString(fmt::format("{}/{}/{} CPS", S.curCps(), S.maxCps, S.clicks).c_str());
+        }
     }
 
     void resetLevel() {
@@ -135,8 +157,7 @@ class $modify(InspectPL, PlayLayer) {
                 c.up >= 0 ? c.up - c.down : -1, prev >= 0 ? c.down - prev : -1);
             prev = c.down;
         }
-        auto path = Mod::get()->getSaveDir() / "clicks.csv";
-        auto _ = utils::file::writeString(path, out);
+        auto _ = utils::file::writeString(Mod::get()->getSaveDir() / "clicks.csv", out);
         PlayLayer::onQuit();
     }
 };

@@ -3,10 +3,12 @@
   "gd": { "win": "2.2081" },
   "id": "yourname.frameinspector",
   "name": "Frame Inspector",
-  "version": "v1.1.0",
+  "version": "v1.2.0",
   "developer": "yourname",
-  "description": "Frame counter overlay + macro overview (click gaps, holds, frame windows) from the pause menu. Logs clicks to CSV.",
+  "description": "Frame window counter + CPS overlay, click sounds, macro overview in the pause menu.",
   "settings": {
-    "show-overlay": { "type": "bool", "name": "Show Overlay", "default": true }
+    "show-overlay": { "type": "bool", "name": "Show Overlay", "default": true },
+    "click-sound": { "type": "bool", "name": "Tight Click Sound", "default": true },
+    "sound-max-gap": { "type": "int", "name": "Sound Max Gap (frames)", "default": 4, "min": 1, "max": 16 }
   }
 }
